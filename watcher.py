@@ -60,7 +60,7 @@ def parse_time_to_minutes(value):
     return None
 
 
-def find_matching_slots(text, match_terms, start_time, end_time):
+def find_matching_slots(text, match_terms, start_time=None, end_time=None):
     if not isinstance(match_terms, list) or not match_terms:
         match_terms = []
 
@@ -68,17 +68,17 @@ def find_matching_slots(text, match_terms, start_time, end_time):
     if any(term.lower() not in lowered for term in match_terms):
         return []
 
-    start_minutes = parse_time_to_minutes(start_time)
-    end_minutes = parse_time_to_minutes(end_time)
-    if start_minutes is None or end_minutes is None:
-        return []
-
     time_candidates = re.findall(r"\d{1,2}:\d{2}\s*(?:am|pm)?", lowered)
-    if not time_candidates:
-        return []
+    if start_time is not None and end_time is not None:
+        start_minutes = parse_time_to_minutes(start_time)
+        end_minutes = parse_time_to_minutes(end_time)
+        if start_minutes is None or end_minutes is None:
+            return []
+    else:
+        start_minutes = None
+        end_minutes = None
 
     matches = []
-    # Split the page body into plausible blocks for slot detection.
     blocks = re.split(r"\n\s*\n+|\|\s*", text)
     for block in blocks:
         block_lower = block.lower()
@@ -86,13 +86,20 @@ def find_matching_slots(text, match_terms, start_time, end_time):
             continue
         if not all(term.lower() in block_lower for term in match_terms):
             continue
-        for candidate in time_candidates:
-            candidate_minutes = parse_time_to_minutes(candidate)
-            if candidate_minutes is None:
+
+        if start_minutes is not None and end_minutes is not None:
+            block_has_time_in_range = False
+            for candidate in time_candidates:
+                candidate_minutes = parse_time_to_minutes(candidate)
+                if candidate_minutes is None:
+                    continue
+                if start_minutes <= candidate_minutes <= end_minutes:
+                    block_has_time_in_range = True
+                    break
+            if not block_has_time_in_range:
                 continue
-            if start_minutes <= candidate_minutes <= end_minutes:
-                matches.append(block.strip())
-                break
+
+        matches.append(block.strip())
     return matches
 
 
@@ -175,16 +182,43 @@ def get_watchers():
     return watchers
 
 
-def monitor_once(dry_run=False):
-    state = load_state()
-    watchers = get_watchers()
-    alerts = []
+def format_matches(matches):
+    if not matches:
+        return "No matching classes found."
+    return "\n".join(f"- {match.strip()}" for match in matches[:10])
 
+
+def collect_watcher_matches(watcher):
+    name = watcher.get("name", "Unnamed watcher")
+    url = watcher.get("url")
+    if not url:
+        return name, []
+
+    try:
+        raw_html = fetch_page_text(url)
+    except Exception as exc:
+        print(f"Failed for {name}: {exc}")
+        return name, []
+
+    text = extract_plain_text(raw_html)
+    matches = find_matching_slots(
+        text,
+        watcher.get("match_terms", ["adult", "level 3"]),
+        watcher.get("start_time", "18:00"),
+        watcher.get("end_time", "20:00"),
+    )
+    return name, matches
+
+
+def build_list_message():
+    watchers = get_watchers()
+    sections = []
     for watcher in watchers:
         name = watcher.get("name", "Unnamed watcher")
         url = watcher.get("url")
         if not url:
             continue
+
         try:
             raw_html = fetch_page_text(url)
         except Exception as exc:
@@ -192,27 +226,43 @@ def monitor_once(dry_run=False):
             continue
 
         text = extract_plain_text(raw_html)
-        matches = find_matching_slots(
-            text,
-            watcher.get("match_terms", ["adult", "level 3"]),
-            watcher.get("start_time", "18:00"),
-            watcher.get("end_time", "20:00"),
-        )
+        list_terms = watcher.get("list_match_terms", ["level 3"])
+        matches = find_matching_slots(text, list_terms, None, None)
+        if not matches:
+            continue
+        sections.append(f"{name}\n{format_matches(matches)}")
 
+    if not sections:
+        return "No matching classes found right now."
+    return "\n\n".join(sections)
+
+
+def monitor_once(dry_run=False):
+    watchers = get_watchers()
+    alerts = []
+
+    for watcher in watchers:
+        name, matches = collect_watcher_matches(watcher)
         if not matches:
             print(f"{name}: no matching slot found")
             continue
 
-        message = f"{name}\n\n{chr(10).join(matches[:10])}"
+        message = f"{name}\n\n{format_matches(matches)}"
         alerts.append(message)
         print(f"{name}: current available slots")
-        state[name] = matches
 
         if not dry_run:
             send_telegram_message(message)
 
-    save_state(state)
     return alerts
+
+
+def run_list_command(dry_run=False):
+    message = build_list_message()
+    print(message)
+    if not dry_run:
+        send_telegram_message(message)
+    return message
 
 
 def run_scheduler(interval_minutes=60):
@@ -226,8 +276,13 @@ def main():
     parser = argparse.ArgumentParser(description="Monitor pages for course availability.")
     parser.add_argument("--dry-run", action="store_true", help="Check pages and print results without sending Telegram messages.")
     parser.add_argument("--once", action="store_true", help="Run one check and exit.")
+    parser.add_argument("--list", action="store_true", help="Send a full list of currently matching classes to Telegram or print it in dry-run mode.")
     parser.add_argument("--interval-minutes", type=int, default=60, help="How often to retry when running in loop mode.")
     args = parser.parse_args()
+
+    if args.list:
+        run_list_command(dry_run=args.dry_run)
+        return
 
     if args.once or args.dry_run:
         monitor_once(dry_run=args.dry_run)
