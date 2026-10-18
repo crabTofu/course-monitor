@@ -203,14 +203,9 @@ def monitor_once(dry_run=False):
             print(f"{name}: no matching slot found")
             continue
 
-        unique_matches = [m for m in matches if m not in state.get(name, [])]
-        if not unique_matches:
-            print(f"{name}: matching slots already seen")
-            continue
-
-        message = f"{name}\n\n{chr(10).join(unique_matches[:5])}"
+        message = f"{name}\n\n{chr(10).join(matches[:10])}"
         alerts.append(message)
-        print(f"{name}: new availability detected")
+        print(f"{name}: current available slots")
         state[name] = matches
 
         if not dry_run:

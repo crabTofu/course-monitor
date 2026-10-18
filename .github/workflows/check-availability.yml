@@ -27,4 +27,4 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           WATCHERS_JSON: ${{ secrets.WATCHERS_JSON }}
         run: |
-          python watcher.py --once --dry-run
+          python watcher.py --once
